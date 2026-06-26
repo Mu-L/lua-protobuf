@@ -1541,6 +1541,8 @@ static int Lpb_typefmt(lua_State *L) {
 
 /* protobuf encode */
 
+#define LPB_NESTLIMIT 1000
+
 typedef enum lpbE_Mode { lpbE_Raw, lpbE_NoZero, lpbE_Full } lpbE_Mode;
 
 typedef struct lpb_Env {
@@ -1548,7 +1550,15 @@ typedef struct lpb_Env {
     lpb_State *LS;
     pb_Buffer *b;
     pb_Slice  *s;
+    int        levels;
 } lpb_Env;
+
+static lpb_Env lpb_initenv(lua_State *L) {
+    lpb_Env e;
+    memset(&e, 0, sizeof(e));
+    e.L = L, e.LS = lpb_lstate(L), e.levels = LPB_NESTLIMIT;
+    return e;
+}
 
 static void lpbE_encode (lpb_Env *e, int idx, const pb_Type *t);
 
@@ -1735,17 +1745,16 @@ static void lpb_pushbuffer(lua_State *L, pb_Buffer *B) {
 #endif
 
 static int Lpb_encode(lua_State *L) {
-    lpb_State *LS = lpb_lstate(L);
-    const pb_Type *t = lpb_type(L, LS, lpb_checkslice(L, 1));
-    lpb_Env e;
+    lpb_Env e = lpb_initenv(L);
+    const pb_Type *t = lpb_type(L, e.LS, lpb_checkslice(L, 1));
     argcheck(L, t!=NULL, 1, "type '%s' does not exists", lua_tostring(L, 1));
     luaL_checktype(L, 2, LUA_TTABLE);
-    e.L = L, e.LS = LS, e.b = test_buffer(L, 3);
-    if (e.b == NULL) e.b = &LS->buffer, pb_resetbuffer(e.b);
+    if ((e.b = test_buffer(L, 3)) == NULL)
+        e.b = &e.LS->buffer, pb_resetbuffer(e.b);
     if (e.LS->use_enc_hooks) lpb_useenchooks(&e, 2, t);
     lpbE_encode(&e, 2, t);
-    if (e.b != &LS->buffer) return lua_settop(L, 3), 1;
-    return lpb_pushbuffer(L, &LS->buffer), 1;
+    if (e.b != &e.LS->buffer) return lua_settop(L, 3), 1;
+    return lpb_pushbuffer(L, &e.LS->buffer), 1;
 }
 
 static int lpbE_pack(lpb_Env* e, int idx, const pb_Type* t) {
@@ -1763,16 +1772,15 @@ static int lpbE_pack(lpb_Env* e, int idx, const pb_Type* t) {
 }
 
 static int Lpb_pack(lua_State* L) {
-    lpb_State* LS = lpb_lstate(L);
-    const pb_Type* t = lpb_type(L, LS, lpb_checkslice(L, 1));
-    lpb_Env e;
+    lpb_Env e = lpb_initenv(L);
+    const pb_Type* t = lpb_type(L, e.LS, lpb_checkslice(L, 1));
     int idx = 3;
     argcheck(L, t!=NULL, 1, "type '%s' does not exists", lua_tostring(L, 1));
-    e.L = L, e.LS = LS, e.b = test_buffer(L, 2);
-    if (e.b == NULL) idx = 2, e.b = &LS->buffer, pb_resetbuffer(e.b);
+    if ((e.b = test_buffer(L, 2)) == NULL)
+        idx = 2, e.b = &e.LS->buffer, pb_resetbuffer(e.b);
     lpbE_pack(&e, idx, t);
-    if (e.b != &LS->buffer) return lua_settop(L, 3), 1;
-    return lpb_pushbuffer(L, &LS->buffer), 1;
+    if (e.b != &e.LS->buffer) return lua_settop(L, 3), 1;
+    return lpb_pushbuffer(L, &e.LS->buffer), 1;
 }
 
 /* protobuf decode */
@@ -1836,7 +1844,9 @@ static void lpbD_field(lpb_Env *e, const pb_Field *f) {
             lua_pushnil(L);
         else {
             lpb_pushtypetable(L, e->LS, f->type);
+            if (--e->levels == 0) luaL_error(L, "message too complex");
             lpb_withinput(e, &sv, lpbD_message(e, f->type));
+            ++e->levels;
         }
         break;
     default:
@@ -1935,17 +1945,12 @@ static int lpbD_message(lpb_Env *e, const pb_Type *t) {
 }
 
 static int lpbD_decode(lua_State *L, pb_Slice s, int start) {
-    lpb_State *LS = lpb_lstate(L);
-    const pb_Type *t = lpb_type(L, LS, lpb_checkslice(L, 1));
-    lpb_Env e;
+    lpb_Env e = lpb_initenv(L);
+    const pb_Type *t = lpb_type(L, e.LS, lpb_checkslice(L, 1));
     argcheck(L, t!=NULL, 1, "type '%s' does not exists", lua_tostring(L, 1));
     lua_settop(L, start);
-    if (!lua_istable(L, start)) {
-        lua_pop(L, 1);
-        lpb_pushtypetable(L, LS, t);
-    }
-    e.L = L, e.LS = LS, e.s = &s;
-    return lpbD_message(&e, t);
+    if (!lua_istable(L, start)) lua_pop(L, 1), lpb_pushtypetable(L, e.LS, t);
+    return e.s = &s, lpbD_message(&e, t);
 }
 
 static int Lpb_decode(lua_State *L) {
@@ -2007,13 +2012,11 @@ static int lpbD_unpack(lpb_Env* e, const pb_Type* t) {
 }
 
 static int Lpb_unpack(lua_State* L) {
-    lpb_State* LS = lpb_lstate(L);
-    const pb_Type* t = lpb_type(L, LS, lpb_checkslice(L, 1));
+    lpb_Env e = lpb_initenv(L);
+    const pb_Type* t = lpb_type(L, e.LS, lpb_checkslice(L, 1));
     pb_Slice s = lpb_checkslice(L, 2);
-    lpb_Env e;
-    e.L = L, e.LS = LS, e.s = &s;
     argcheck(L, t != NULL, 1, "type '%s' does not exists", lua_tostring(L, 1));
-    return lpbD_unpack(&e, t);
+    return e.s = &s, lpbD_unpack(&e, t);
 }
 
 /* pb module interface */

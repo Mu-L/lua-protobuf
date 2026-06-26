@@ -1751,6 +1751,41 @@ function _G.test_extend_pack()
    eq(v2, nil)
 end
 
+function _G.test_limit()
+   local data = ("\11"):rep(2000)..("\12"):rep(2000)
+   check_load [[
+   message Test {
+   }
+   message Test2 {
+      optional Test2 t1 = 1;
+      optional Test2 t2 = 2;
+   }
+   ]]
+   local t = pb.decode("Test", data)
+   eq(t, {})
+   local b = buffer.new()
+   for i = 1, 1000 do
+      local r = b:result()
+      b:reset():pack("vs", 10, r)
+   end
+   b = b:result()
+   fail("message too complex", function()
+      pb.decode("Test2", b)
+   end)
+
+   local b = buffer.new()
+   for i = 1, 999 do
+      local r = b:result()
+      b:reset():pack("vs", 10, r)
+   end
+   local b1 = b:result(); b:reset()
+   for i = 1, 999 do
+      local r = b:result()
+      b:reset():pack("vs", 18, r)
+   end
+   pb.decode("Test2", b1..b:result())
+end
+
 if _VERSION == "Lua 5.1" and not _G.jit then
    lu.LuaUnit.run()
 else

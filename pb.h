@@ -524,17 +524,17 @@ PB_API size_t pb_readbytes(pb_Slice *s, pb_Slice *pv) {
 PB_API size_t pb_readgroup(pb_Slice *s, uint32_t tag, pb_Slice *pv) {
     const char *p = s->p;
     uint32_t newtag = 0;
-    size_t count;
+    size_t count, nested = 0;
     assert(pb_gettype(tag) == PB_TGSTART);
     while ((count = pb_readvarint32(s, &newtag)) != 0) {
-        if (pb_gettype(newtag) == PB_TGEND) {
+        if (nested == 0 && pb_gettype(newtag) == PB_TGEND) {
             if (pb_gettag(newtag) != pb_gettag(tag)) break;
-            pv->start = s->start;
-            pv->p = p;
-            pv->end = s->p - count;
+            pv->start = s->start, pv->p = p, pv->end = s->p - count;
             return s->p - p;
         }
-        if (pb_skipvalue(s, newtag) == 0) break;
+        if (pb_gettype(newtag) == PB_TGSTART) nested += 1;
+        else if (pb_gettype(newtag) == PB_TGEND) nested -= 1;
+        else if (pb_skipvalue(s, newtag) == 0) break;
     }
     return (s->p = p), 0;
 }
